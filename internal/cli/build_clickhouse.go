@@ -3,6 +3,6 @@
 package cli
 
 import (
-	_ "github.com/golang-migrate/migrate/v4/database/clickhouse"
+	_ "github.com/solvedata/migrate/v4/database/clickhouse"
 	_ "github.com/ClickHouse/clickhouse-go"
 )

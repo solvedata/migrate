@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database"
+	"github.com/solvedata/migrate/v4"
+	"github.com/solvedata/migrate/v4/database"
 	"github.com/hashicorp/go-multierror"
 )
 
@@ -193,7 +193,7 @@ func (ch *ClickHouse) ensureVersionTable() (err error) {
 	// if not, create the empty migration table
 	query = `
 		CREATE TABLE ` + ch.config.MigrationsTable + ` (
-			version    Int64, 
+			version    Int64,
 			dirty      UInt8,
 			sequence   UInt64
 		) Engine=TinyLog

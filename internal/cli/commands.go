@@ -3,9 +3,9 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/stub" // TODO remove again
-	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/solvedata/migrate/v4"
+	_ "github.com/solvedata/migrate/v4/database/stub" // TODO remove again
+	_ "github.com/solvedata/migrate/v4/source/file"
 	"os"
 	"path/filepath"
 	"strconv"

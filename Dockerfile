@@ -3,7 +3,7 @@ ARG VERSION
 
 RUN apk add --no-cache git gcc musl-dev
 
-WORKDIR /go/src/github.com/golang-migrate/migrate
+WORKDIR /go/src/github.com/solvedata/migrate
 
 COPY . ./
 
@@ -17,7 +17,7 @@ FROM alpine:3.10
 
 RUN apk add --no-cache ca-certificates
 
-COPY --from=downloader /go/src/github.com/golang-migrate/migrate/build/migrate.linux-386 /migrate
+COPY --from=downloader /go/src/github.com/solvedata/migrate/build/migrate.linux-386 /migrate
 
 ENTRYPOINT ["/migrate"]
 CMD ["--help"]

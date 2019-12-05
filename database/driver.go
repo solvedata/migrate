@@ -9,7 +9,7 @@ import (
 	"io"
 	"sync"
 
-	iurl "github.com/golang-migrate/migrate/v4/internal/url"
+	iurl "github.com/solvedata/migrate/v4/internal/url"
 )
 
 var (
