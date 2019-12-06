@@ -34,11 +34,9 @@ type Ksql struct {
 }
 
 func (s *Ksql) Open(url string) (database.Driver, error) {
-	fmt.Println("Open")
 	// Create HTTP client to use
 	client := &http.Client{}
 	httpUrl := strings.Replace(url, "ksql://", "http://", 1)
-	fmt.Println(httpUrl)
 
 	// We have a URL - can we connect?
 	return &Ksql{
@@ -54,8 +52,6 @@ func (s *Ksql) Open(url string) (database.Driver, error) {
 type Config struct{}
 
 func WithInstance(instance interface{}, config *Config) (database.Driver, error) {
-	fmt.Println("WithInstance")
-
 	return &Ksql{
 		Instance:          instance,
 		CurrentVersion:    -1,
@@ -65,7 +61,6 @@ func WithInstance(instance interface{}, config *Config) (database.Driver, error)
 }
 
 func (s *Ksql) Close() error {
-	fmt.Println("Close")
 	return nil
 }
 
@@ -89,18 +84,29 @@ func (s *Ksql) Run(migration io.Reader) error {
 		return errors.New(fmt.Sprintf("Cannot connect to KSQL at %v", s.HttpUrl))
 	}
 
-	fmt.Println("Run")
 	m, err := ioutil.ReadAll(migration)
 	if err != nil {
 		return err
 	}
+
 	s.LastRunMigration = m
 	s.MigrationSequence = append(s.MigrationSequence, string(m[:]))
+
+	query := string(m[:])
+	resp, err := s.runQuery(query)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != 200 {
+		printResponseBody(resp)
+		return errors.New(fmt.Sprintf("Unexpected response code of %v", resp.Status))
+	}
+
 	return nil
 }
 
 func (s *Ksql) SetVersion(version int, state bool) error {
-	fmt.Println("Set version")
 	s.CurrentVersion = version
 	s.IsDirty = state
 	return nil
@@ -113,7 +119,6 @@ func (s *Ksql) Version() (version int, dirty bool, err error) {
 const DROP = "DROP"
 
 func (s *Ksql) Drop() error {
-	fmt.Println("Drop")
 	s.CurrentVersion = -1
 	s.LastRunMigration = nil
 	s.MigrationSequence = append(s.MigrationSequence, DROP)
@@ -125,7 +130,6 @@ func (s *Ksql) EqualSequence(seq []string) bool {
 }
 
 func (s *Ksql) ensureUrlConection() bool {
-	fmt.Println("Ensure connection")
 	// Check that we can run a query with the given URL
 	query := "LIST TOPICS;"
 	resp, err := s.runQuery(query)
@@ -137,14 +141,15 @@ func (s *Ksql) ensureUrlConection() bool {
 }
 
 func (s *Ksql) runQuery(query string) (*http.Response, error) {
-	req_body := []byte(fmt.Sprintf(`{\"ksql\":\"%v\",\"streamsProperties\":{}}`, query))
+	formatted_query := fmt.Sprintf(`{"ksql":"%v","streamsProperties":{ "ksql.streams.auto.offset.reset": "earliest"}}`, strings.Replace(query, "\n", " ", -1))
+	req_body := []byte(formatted_query)
 	req, err := http.NewRequest("POST", s.HttpUrl, bytes.NewBuffer(req_body))
 
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Add("Content-Type", `[{"key":"Content-Type","name":"Content-Type","value":"application/vnd.ksql.v1+json; charset=utf-8","description":"","type":"text"}]`)
+	req.Header.Add("Content-Type", "application/vnd.ksql.v1+json; charset=utf-8")
 	resp, err := s.Client.Do(req)
 
 	if err != nil {
@@ -152,4 +157,14 @@ func (s *Ksql) runQuery(query string) (*http.Response, error) {
 	}
 
 	return resp, nil
+}
+
+func printResponseBody(resp *http.Response) {
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println("Error printing response body", err)
+		return
+	}
+	bodyString := string(bodyBytes)
+	fmt.Println(bodyString)
 }
