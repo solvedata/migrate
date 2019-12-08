@@ -7,7 +7,6 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
-	"reflect"
 	"strings"
 
 	"github.com/solvedata/migrate/v4/database"
@@ -17,7 +16,16 @@ func init() {
 	database.Register("ksql", &Ksql{})
 }
 
-var DefaultMigrationsTopic = "migrations"
+var DefaultMigrationsTableAndTopic = "schema_migraions"
+var CreateTableSQL = `CREATE TABLE schema_migrations
+  (registertime BIGINT,
+  id VARCHAR,
+  blob VARCHAR,
+  created_at VARCHAR)
+  WITH (KAFKA_TOPIC = 'schema_migrations',
+        VALUE_FORMAT='JSON',
+        KEY = 'id',
+        PARTITIONS = 1);`
 
 type Ksql struct {
 	Url               string
@@ -39,26 +47,30 @@ func (s *Ksql) Open(url string) (database.Driver, error) {
 	httpUrl := strings.Replace(url, "ksql://", "http://", 1)
 
 	// We have a URL - can we connect?
-	return &Ksql{
+
+	ks := &Ksql{
 		Url:               url,
 		HttpUrl:           httpUrl,
 		Client:            client,
 		CurrentVersion:    -1,
 		MigrationSequence: make([]string, 0),
 		Config:            &Config{},
-	}, nil
+	}
+
+	hasConnection := ks.ensureUrlConection()
+
+	if !hasConnection {
+		return nil, errors.New(fmt.Sprintf("Cannot connect to KSQL at %v", s.HttpUrl))
+	}
+
+	if err := ks.ensureVersionTable(); err != nil {
+		return nil, err
+	}
+
+	return ks, nil
 }
 
 type Config struct{}
-
-func WithInstance(instance interface{}, config *Config) (database.Driver, error) {
-	return &Ksql{
-		Instance:          instance,
-		CurrentVersion:    -1,
-		MigrationSequence: make([]string, 0),
-		Config:            config,
-	}, nil
-}
 
 func (s *Ksql) Close() error {
 	return nil
@@ -78,12 +90,6 @@ func (s *Ksql) Unlock() error {
 }
 
 func (s *Ksql) Run(migration io.Reader) error {
-	hasConnection := s.ensureUrlConection()
-
-	if !hasConnection {
-		return errors.New(fmt.Sprintf("Cannot connect to KSQL at %v", s.HttpUrl))
-	}
-
 	m, err := ioutil.ReadAll(migration)
 	if err != nil {
 		return err
@@ -91,6 +97,8 @@ func (s *Ksql) Run(migration io.Reader) error {
 
 	s.LastRunMigration = m
 	s.MigrationSequence = append(s.MigrationSequence, string(m[:]))
+
+	fmt.Print(s.MigrationSequence)
 
 	query := string(m[:])
 	resp, err := s.runQuery(query)
@@ -116,17 +124,11 @@ func (s *Ksql) Version() (version int, dirty bool, err error) {
 	return s.CurrentVersion, s.IsDirty, nil
 }
 
-const DROP = "DROP"
-
 func (s *Ksql) Drop() error {
 	s.CurrentVersion = -1
 	s.LastRunMigration = nil
-	s.MigrationSequence = append(s.MigrationSequence, DROP)
+	s.MigrationSequence = append(s.MigrationSequence, "DROP")
 	return nil
-}
-
-func (s *Ksql) EqualSequence(seq []string) bool {
-	return reflect.DeepEqual(seq, s.MigrationSequence)
 }
 
 func (s *Ksql) ensureUrlConection() bool {
@@ -138,6 +140,28 @@ func (s *Ksql) ensureUrlConection() bool {
 	}
 
 	return resp.Status != "200"
+}
+
+func (s *Ksql) ensureVersionTable() (err error) {
+	stmt := "LIST TABLES;"
+	resp, err := s.runQuery(stmt)
+	if err != nil {
+		return err
+	}
+
+	tableExists := strings.Contains(reposeBodyText(resp), DefaultMigrationsTableAndTopic)
+
+	if tableExists {
+		fmt.Println("Table exists")
+		return nil
+	}
+
+	resp, err = s.runQuery(CreateTableSQL)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (s *Ksql) runQuery(query string) (*http.Response, error) {
@@ -159,12 +183,16 @@ func (s *Ksql) runQuery(query string) (*http.Response, error) {
 	return resp, nil
 }
 
-func printResponseBody(resp *http.Response) {
+func reposeBodyText(resp *http.Response) string {
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		fmt.Println("Error printing response body", err)
-		return
+		return ""
 	}
-	bodyString := string(bodyBytes)
+	return string(bodyBytes)
+}
+
+func printResponseBody(resp *http.Response) {
+	bodyString := reposeBodyText(resp)
 	fmt.Println(bodyString)
 }
