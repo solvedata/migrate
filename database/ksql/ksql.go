@@ -28,22 +28,13 @@ var CreateMigrationStreamSQL = `CREATE STREAM migrations
 var CreateMigrationTableSQL = `CREATE TABLE schema_migrations AS
   SELECT MAX(ROWTIME), type FROM migrations GROUP BY type;`
 var LatestSchemaRowTimeSQL = `SELECT * FROM schema_migrations WHERE type = 'schema' LIMIT 1;`
+var LatestSchemaMigrationSql = `SELECT * FROM migrations WHERE rowtime = %v LIMIT 1;`
 
-// var LatestSchemaMigrationSQL = `SELECT * FROM schema_migrations
-//   WHERE type = 'schema' LIMIT 1;`
-
-// INSERT INTO migrations VALUES ('schema', 'schema', 1, false);
-// INSERT INTO migrations VALUES ('schema', 'schema', 3, true);
-// INSERT INTO migrations VALUES ('schema', 'schema', , false);
-// create table test as select max(current_version), type from migrations group by type;
-// select * from test where type = 'schema' limit 1;
-// select * from schema_migrations where rowtime = 1576119064224 limit 1;
-
-type SavedMigrationResult struct {
-	Row SavedMigrationRow
+type MigrationResult struct {
+	Row MigrationRow
 }
 
-type SavedMigrationRow struct {
+type MigrationRow struct {
 	Columns []interface{}
 }
 
@@ -115,12 +106,14 @@ func (s *Ksql) Run(migration io.Reader) error {
 	s.MigrationSequence = append(s.MigrationSequence, string(m[:]))
 
 	query := string(m[:])
+	// The migration is expecte to be valid KSQL. Send this to the KSQL server
 	resp, err := s.runKsql(query)
 	if err != nil {
 		return err
 	}
 
 	if resp.StatusCode != 200 {
+		// Something unexpected happened. Print out the response body and error out.
 		printResponseBody(resp)
 		return errors.New(fmt.Sprintf("Unexpected response code of %v", resp.Status))
 	}
@@ -128,70 +121,43 @@ func (s *Ksql) Run(migration io.Reader) error {
 	return nil
 }
 
+// Adds a new record with the current migration version and it's dirty state
 func (s *Ksql) SetVersion(version int, dirty bool) error {
 	if version >= 0 {
 		query := fmt.Sprintf("INSERT INTO migrations VALUES ('schema', 'schema', %v, %v);", version, dirty)
-		resp, err := s.runKsql(query)
+		_, err := s.runKsql(query)
 		if err != nil {
 			return nil
 		}
-		printResponseBody(resp)
+
+		// Version updated in migration table successfully. Update instance
 		s.CurrentVersion = version
 		s.IsDirty = dirty
 	}
 	return nil
 }
 
+// Retrieves the current version of the KSQL migration state
 func (s *Ksql) Version() (version int, dirty bool, err error) {
 	fmt.Println("Version:", version)
 	if s.FirstRun {
+		// This is the first time _any_ migration has been run. No version to retrieve
+		// See .ensureVersionTable for where this is set
 		fmt.Println("First run, no version to set")
 		return -1, false, nil
 	}
 
-	resp, err := s.runQuery(LatestSchemaRowTimeSQL)
-	if err != nil {
-		fmt.Println("Error getting current version, not setting")
-		return -1, false, err
-	}
-
-	body := strings.Trim(resposeBodyText(resp), "\n")
-	lines := strings.Split(body, "\n")
-
-	var latestTimeRows SavedMigrationResult
-	err = json.Unmarshal([]byte(lines[0]), &latestTimeRows)
+	rowtime, err := s.getLatestSchemaRowTime()
 	if err != nil {
 		return -1, false, err
 	}
 
-	fmt.Println("latest", latestTimeRows)
-
-	rowtime := latestTimeRows.Row.Columns[0]
-	latestSchemaMigrationSql := fmt.Sprintf(`SELECT * FROM migrations WHERE rowtime = %v LIMIT 1;`, rowtime)
-
-	resp, err = s.runQuery(latestSchemaMigrationSql)
-	if err != nil {
-		fmt.Println("Error getting current version, not setting")
-		return -1, false, err
-	}
-	body = strings.Trim(resposeBodyText(resp), "\n")
-	lines = strings.Split(body, "\n")
-
-	var latestMigrationRows SavedMigrationResult
-	err = json.Unmarshal([]byte(lines[0]), &latestMigrationRows)
+	currentVersion, isDirty, err := s.getLatestMigration(rowtime)
 	if err != nil {
 		return -1, false, err
 	}
 
-	i := int(latestMigrationRows.Row.Columns[3].(float64))
-	fmt.Println(i)
-	// i, err = strconv.ParseInt(latestMigrationRows.Row.Columns[3].(string), 10, 32)
-	if err != nil {
-		return -1, false, err
-	}
-	fmt.Println("latest", i)
-
-	return i, latestMigrationRows.Row.Columns[4].(bool), nil
+	return currentVersion, isDirty, nil
 }
 
 func (s *Ksql) Drop() error {
@@ -212,6 +178,7 @@ func (s *Ksql) ensureUrlConection() bool {
 	return resp.Status != "200"
 }
 
+// Makes sure that the schema migration state table is setup correctly
 func (s *Ksql) ensureVersionTable() (err error) {
 	stmt := "LIST TABLES;"
 	resp, err := s.runKsql(stmt)
@@ -220,29 +187,30 @@ func (s *Ksql) ensureVersionTable() (err error) {
 	}
 
 	lowerCaseBody := strings.ToLower(resposeBodyText(resp))
+	// Simple check - does any text (i.e. table names) contain schema_migrations?
 	tableExists := strings.Contains(lowerCaseBody, "schema_migrations")
 
 	if tableExists {
-		fmt.Println("Exists")
+		fmt.Println("Schema migrations table already exists")
 		s.FirstRun = false
 		return nil
 	}
 
-	fmt.Println("Table does not exist. Creating stream")
-
+	fmt.Println("Schema migrations table does not exist. Creating stream")
+	// First create the stream for the table to come off
 	resp, err = s.runKsql(CreateMigrationStreamSQL)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println("Table does not exist. Creating table")
-
+	fmt.Println("Schema migrations table does not exist. Creating table")
+	// Now create the table itself
 	resp, err = s.runKsql(CreateMigrationTableSQL)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println("Creation done!")
+	fmt.Println("Schema migrations table creation done!")
 
 	return nil
 }
@@ -277,6 +245,52 @@ func (s *Ksql) doQuery(url string, query string) (*http.Response, error) {
 	return resp, nil
 }
 
+// Does a request for the most recent timestamp in the migration stream
+func (s *Ksql) getLatestSchemaRowTime() (interface{}, error) {
+	resp, err := s.runQuery(LatestSchemaRowTimeSQL)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := responseBodyMigrationResult(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Row.Columns[0], nil
+}
+
+// Does a request for the most recent event in the migration table
+func (s *Ksql) getLatestMigration(rowtime interface{}) (int, bool, error) {
+	resp, err := s.runQuery(fmt.Sprintf(LatestSchemaMigrationSql, rowtime))
+	if err != nil {
+		return -1, false, err
+	}
+	result, err := responseBodyMigrationResult(resp)
+	if err != nil {
+		return -1, false, err
+	}
+
+	currentVersion := int(result.Row.Columns[3].(float64))
+	isDirty := result.Row.Columns[4].(bool)
+	return currentVersion, isDirty, nil
+}
+
+// Helper to grab the first line in a response body (while also removing whitespace etc)
+func responseBodyMigrationResult(resp *http.Response) (MigrationResult, error) {
+	body := strings.Trim(resposeBodyText(resp), "\n")
+	lines := strings.Split(body, "\n")
+
+	var result MigrationResult
+	err := json.Unmarshal([]byte(lines[0]), &result)
+	if err != nil {
+		return MigrationResult{}, err
+	}
+
+	return result, nil
+}
+
+// Helper to extract the HTTP response body
 func resposeBodyText(resp *http.Response) string {
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
@@ -286,6 +300,7 @@ func resposeBodyText(resp *http.Response) string {
 	return string(bodyBytes)
 }
 
+// Debuggering helper to print the HTTP response body
 func printResponseBody(resp *http.Response) {
 	bodyString := resposeBodyText(resp)
 	fmt.Println(bodyString)
