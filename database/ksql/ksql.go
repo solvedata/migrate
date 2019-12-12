@@ -2,6 +2,7 @@ package ksql
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,16 +17,35 @@ func init() {
 	database.Register("ksql", &Ksql{})
 }
 
-var DefaultMigrationsTableAndTopic = "schema_migraions"
-var CreateTableSQL = `CREATE TABLE schema_migrations
-  (registertime BIGINT,
-  id VARCHAR,
-  blob VARCHAR,
-  created_at VARCHAR)
+var CreateMigrationStreamSQL = `CREATE STREAM migrations
+  (type VARCHAR,
+  current_version INT,
+  is_dirty BOOLEAN)
   WITH (KAFKA_TOPIC = 'schema_migrations',
         VALUE_FORMAT='JSON',
-        KEY = 'id',
+        KEY = 'type',
         PARTITIONS = 1);`
+var CreateMigrationTableSQL = `CREATE TABLE schema_migrations AS
+  SELECT MAX(ROWTIME), type FROM migrations GROUP BY type;`
+var LatestSchemaRowTimeSQL = `SELECT * FROM schema_migrations WHERE type = 'schema' LIMIT 1;`
+
+// var LatestSchemaMigrationSQL = `SELECT * FROM schema_migrations
+//   WHERE type = 'schema' LIMIT 1;`
+
+// INSERT INTO migrations VALUES ('schema', 'schema', 1, false);
+// INSERT INTO migrations VALUES ('schema', 'schema', 3, true);
+// INSERT INTO migrations VALUES ('schema', 'schema', , false);
+// create table test as select max(current_version), type from migrations group by type;
+// select * from test where type = 'schema' limit 1;
+// select * from schema_migrations where rowtime = 1576119064224 limit 1;
+
+type SavedMigrationResult struct {
+	Row SavedMigrationRow
+}
+
+type SavedMigrationRow struct {
+	Columns []interface{}
+}
 
 type Ksql struct {
 	Url               string
@@ -35,7 +55,7 @@ type Ksql struct {
 	MigrationSequence []string
 	LastRunMigration  []byte // todo: make []string
 	IsDirty           bool
-	IsLocked          bool
+	FirstRun          bool
 	Client            *http.Client
 
 	Config *Config
@@ -53,6 +73,7 @@ func (s *Ksql) Open(url string) (database.Driver, error) {
 		HttpUrl:           httpUrl,
 		Client:            client,
 		CurrentVersion:    -1,
+		FirstRun:          true,
 		MigrationSequence: make([]string, 0),
 		Config:            &Config{},
 	}
@@ -77,15 +98,10 @@ func (s *Ksql) Close() error {
 }
 
 func (s *Ksql) Lock() error {
-	if s.IsLocked {
-		return database.ErrLocked
-	}
-	s.IsLocked = true
 	return nil
 }
 
 func (s *Ksql) Unlock() error {
-	s.IsLocked = false
 	return nil
 }
 
@@ -98,10 +114,8 @@ func (s *Ksql) Run(migration io.Reader) error {
 	s.LastRunMigration = m
 	s.MigrationSequence = append(s.MigrationSequence, string(m[:]))
 
-	fmt.Print(s.MigrationSequence)
-
 	query := string(m[:])
-	resp, err := s.runQuery(query)
+	resp, err := s.runKsql(query)
 	if err != nil {
 		return err
 	}
@@ -114,14 +128,70 @@ func (s *Ksql) Run(migration io.Reader) error {
 	return nil
 }
 
-func (s *Ksql) SetVersion(version int, state bool) error {
-	s.CurrentVersion = version
-	s.IsDirty = state
+func (s *Ksql) SetVersion(version int, dirty bool) error {
+	if version >= 0 {
+		query := fmt.Sprintf("INSERT INTO migrations VALUES ('schema', 'schema', %v, %v);", version, dirty)
+		resp, err := s.runKsql(query)
+		if err != nil {
+			return nil
+		}
+		printResponseBody(resp)
+		s.CurrentVersion = version
+		s.IsDirty = dirty
+	}
 	return nil
 }
 
 func (s *Ksql) Version() (version int, dirty bool, err error) {
-	return s.CurrentVersion, s.IsDirty, nil
+	fmt.Println("Version:", version)
+	if s.FirstRun {
+		fmt.Println("First run, no version to set")
+		return -1, false, nil
+	}
+
+	resp, err := s.runQuery(LatestSchemaRowTimeSQL)
+	if err != nil {
+		fmt.Println("Error getting current version, not setting")
+		return -1, false, err
+	}
+
+	body := strings.Trim(resposeBodyText(resp), "\n")
+	lines := strings.Split(body, "\n")
+
+	var latestTimeRows SavedMigrationResult
+	err = json.Unmarshal([]byte(lines[0]), &latestTimeRows)
+	if err != nil {
+		return -1, false, err
+	}
+
+	fmt.Println("latest", latestTimeRows)
+
+	rowtime := latestTimeRows.Row.Columns[0]
+	latestSchemaMigrationSql := fmt.Sprintf(`SELECT * FROM migrations WHERE rowtime = %v LIMIT 1;`, rowtime)
+
+	resp, err = s.runQuery(latestSchemaMigrationSql)
+	if err != nil {
+		fmt.Println("Error getting current version, not setting")
+		return -1, false, err
+	}
+	body = strings.Trim(resposeBodyText(resp), "\n")
+	lines = strings.Split(body, "\n")
+
+	var latestMigrationRows SavedMigrationResult
+	err = json.Unmarshal([]byte(lines[0]), &latestMigrationRows)
+	if err != nil {
+		return -1, false, err
+	}
+
+	i := int(latestMigrationRows.Row.Columns[3].(float64))
+	fmt.Println(i)
+	// i, err = strconv.ParseInt(latestMigrationRows.Row.Columns[3].(string), 10, 32)
+	if err != nil {
+		return -1, false, err
+	}
+	fmt.Println("latest", i)
+
+	return i, latestMigrationRows.Row.Columns[4].(bool), nil
 }
 
 func (s *Ksql) Drop() error {
@@ -134,7 +204,7 @@ func (s *Ksql) Drop() error {
 func (s *Ksql) ensureUrlConection() bool {
 	// Check that we can run a query with the given URL
 	query := "LIST TOPICS;"
-	resp, err := s.runQuery(query)
+	resp, err := s.runKsql(query)
 	if err != nil {
 		return false
 	}
@@ -144,30 +214,54 @@ func (s *Ksql) ensureUrlConection() bool {
 
 func (s *Ksql) ensureVersionTable() (err error) {
 	stmt := "LIST TABLES;"
-	resp, err := s.runQuery(stmt)
+	resp, err := s.runKsql(stmt)
 	if err != nil {
 		return err
 	}
 
-	tableExists := strings.Contains(reposeBodyText(resp), DefaultMigrationsTableAndTopic)
+	lowerCaseBody := strings.ToLower(resposeBodyText(resp))
+	tableExists := strings.Contains(lowerCaseBody, "schema_migrations")
 
 	if tableExists {
-		fmt.Println("Table exists")
+		fmt.Println("Exists")
+		s.FirstRun = false
 		return nil
 	}
 
-	resp, err = s.runQuery(CreateTableSQL)
+	fmt.Println("Table does not exist. Creating stream")
+
+	resp, err = s.runKsql(CreateMigrationStreamSQL)
 	if err != nil {
 		return err
 	}
+
+	fmt.Println("Table does not exist. Creating table")
+
+	resp, err = s.runKsql(CreateMigrationTableSQL)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Creation done!")
 
 	return nil
 }
 
+func (s *Ksql) runKsql(query string) (*http.Response, error) {
+	url := fmt.Sprintf(`%v/ksql`, s.HttpUrl)
+	return s.doQuery(url, query)
+}
+
 func (s *Ksql) runQuery(query string) (*http.Response, error) {
+	url := fmt.Sprintf(`%v/query`, s.HttpUrl)
+	fmt.Println(url, query)
+	return s.doQuery(url, query)
+}
+
+func (s *Ksql) doQuery(url string, query string) (*http.Response, error) {
 	formatted_query := fmt.Sprintf(`{"ksql":"%v","streamsProperties":{ "ksql.streams.auto.offset.reset": "earliest"}}`, strings.Replace(query, "\n", " ", -1))
 	req_body := []byte(formatted_query)
-	req, err := http.NewRequest("POST", s.HttpUrl, bytes.NewBuffer(req_body))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(req_body))
 
 	if err != nil {
 		return nil, err
@@ -183,7 +277,7 @@ func (s *Ksql) runQuery(query string) (*http.Response, error) {
 	return resp, nil
 }
 
-func reposeBodyText(resp *http.Response) string {
+func resposeBodyText(resp *http.Response) string {
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		fmt.Println("Error printing response body", err)
@@ -193,6 +287,6 @@ func reposeBodyText(resp *http.Response) string {
 }
 
 func printResponseBody(resp *http.Response) {
-	bodyString := reposeBodyText(resp)
+	bodyString := resposeBodyText(resp)
 	fmt.Println(bodyString)
 }
