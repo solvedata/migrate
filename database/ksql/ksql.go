@@ -57,6 +57,7 @@ func (s *Ksql) Open(url string) (database.Driver, error) {
 	// Create HTTP client to use
 	client := &http.Client{}
 	httpUrl := strings.Replace(url, "ksql://", "http://", 1)
+	fmt.Println("Setting HTTP URL with", httpUrl)
 
 	// We have a URL - can we connect?
 
