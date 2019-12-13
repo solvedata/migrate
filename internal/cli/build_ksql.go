@@ -1,3 +1,5 @@
+// +build ksql
+
 package cli
 
 import (
