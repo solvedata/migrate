@@ -99,6 +99,7 @@ func (s *Ksql) Unlock() error {
 }
 
 func (s *Ksql) Run(migration io.Reader) error {
+	fmt.Println("RUN: ", s)
 	m, err := ioutil.ReadAll(migration)
 	if err != nil {
 		return err
