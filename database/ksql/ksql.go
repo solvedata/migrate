@@ -17,18 +17,18 @@ func init() {
 	database.Register("ksql", &Ksql{})
 }
 
-var CreateMigrationStreamSQL = `CREATE STREAM migrations
+var CreateMigrationStreamSQL = `CREATE STREAM mgrt
   (type VARCHAR,
   current_version INT,
   is_dirty BOOLEAN)
-  WITH (KAFKA_TOPIC = 'schema_migrations',
+  WITH (KAFKA_TOPIC = 's_mgrt',
         VALUE_FORMAT='JSON',
         KEY = 'type',
         PARTITIONS = 1);`
-var CreateMigrationTableSQL = `CREATE TABLE schema_migrations AS
-  SELECT MAX(ROWTIME), type FROM migrations GROUP BY type;`
-var LatestSchemaRowTimeSQL = `SELECT * FROM schema_migrations WHERE type = 'schema' LIMIT 1;`
-var LatestSchemaMigrationSql = `SELECT * FROM migrations WHERE rowtime = %v LIMIT 1;`
+var CreateMigrationTableSQL = `CREATE TABLE s_mgrt AS
+  SELECT MAX(ROWTIME), type FROM mgrt GROUP BY type;`
+var LatestSchemaRowTimeSQL = `SELECT * FROM s_mgrt WHERE type = 'schema' LIMIT 1;`
+var LatestSchemaMigrationSql = `SELECT * FROM mgrt WHERE rowtime = %v LIMIT 1;`
 
 type MigrationResult struct {
 	Row MigrationRow
@@ -127,7 +127,7 @@ func (s *Ksql) Run(migration io.Reader) error {
 // Adds a new record with the current migration version and it's dirty state
 func (s *Ksql) SetVersion(version int, dirty bool) error {
 	if version >= 0 {
-		query := fmt.Sprintf("INSERT INTO migrations VALUES ('schema', 'schema', %v, %v);", version, dirty)
+		query := fmt.Sprintf("INSERT INTO mgrt VALUES ('schema', 'schema', %v, %v);", version, dirty)
 		_, err := s.runKsql(query)
 		if err != nil {
 			return nil
@@ -193,7 +193,7 @@ func (s *Ksql) ensureVersionTable() (err error) {
 	fmt.Println("Tablee version check: ", body)
 	lowerCaseBody := strings.ToLower(body)
 	// Simple check - does any text (i.e. table names) contain schema_migrations?
-	tableExists := strings.Contains(lowerCaseBody, "schema_migrations")
+	tableExists := strings.Contains(lowerCaseBody, "s_mgrt")
 
 	if tableExists {
 		fmt.Println("Schema migrations table already exists")
