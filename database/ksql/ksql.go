@@ -189,7 +189,9 @@ func (s *Ksql) ensureVersionTable() (err error) {
 		return err
 	}
 
-	lowerCaseBody := strings.ToLower(resposeBodyText(resp))
+	body := resposeBodyText(resp)
+	fmt.Println("Tablee version check: ", body)
+	lowerCaseBody := strings.ToLower(body)
 	// Simple check - does any text (i.e. table names) contain schema_migrations?
 	tableExists := strings.Contains(lowerCaseBody, "schema_migrations")
 
