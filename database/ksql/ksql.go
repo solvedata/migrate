@@ -17,18 +17,22 @@ func init() {
 	database.Register("ksql", &Ksql{})
 }
 
-var CreateMigrationStreamSQL = `CREATE STREAM mgrt
+var CreateMigrationStreamSQL = `CREATE STREAM migrations
   (type VARCHAR,
   current_version INT,
   is_dirty BOOLEAN)
-  WITH (KAFKA_TOPIC = 's_mgrt',
+  WITH (KAFKA_TOPIC = 'ksql_migrations',
         VALUE_FORMAT='JSON',
         KEY = 'type',
         PARTITIONS = 1);`
-var CreateMigrationTableSQL = `CREATE TABLE s_mgrt AS
-  SELECT MAX(ROWTIME), type FROM mgrt GROUP BY type;`
-var LatestSchemaRowTimeSQL = `SELECT * FROM s_mgrt WHERE type = 'schema' LIMIT 1;`
-var LatestSchemaMigrationSql = `SELECT * FROM mgrt WHERE rowtime = %v LIMIT 1;`
+var CreateMigrationTableSQL = `CREATE TABLE schema_migrations
+  WITH (KAFKA_TOPIC = 'ksql_schema_migrations',
+        VALUE_FORMAT='JSON',
+        PARTITIONS = 1)
+  AS SELECT MAX(ROWTIME), type FROM migrations
+  GROUP BY type;`
+var LatestSchemaRowTimeSQL = `SELECT * FROM schema_migrations WHERE type = 'schema' LIMIT 1;`
+var LatestSchemaMigrationSql = `SELECT * FROM migrations WHERE rowtime = %v LIMIT 1;`
 
 type MigrationResult struct {
 	Row MigrationRow
@@ -99,7 +103,6 @@ func (s *Ksql) Unlock() error {
 }
 
 func (s *Ksql) Run(migration io.Reader) error {
-	fmt.Println("RUN: ", s)
 	m, err := ioutil.ReadAll(migration)
 	if err != nil {
 		return err
@@ -127,7 +130,7 @@ func (s *Ksql) Run(migration io.Reader) error {
 // Adds a new record with the current migration version and it's dirty state
 func (s *Ksql) SetVersion(version int, dirty bool) error {
 	if version >= 0 {
-		query := fmt.Sprintf("INSERT INTO mgrt VALUES ('schema', 'schema', %v, %v);", version, dirty)
+		query := fmt.Sprintf("INSERT INTO migrations VALUES ('schema', 'schema', %v, %v);", version, dirty)
 		_, err := s.runKsql(query)
 		if err != nil {
 			return nil
@@ -190,10 +193,9 @@ func (s *Ksql) ensureVersionTable() (err error) {
 	}
 
 	body := resposeBodyText(resp)
-	fmt.Println("Tablee version check: ", body)
 	lowerCaseBody := strings.ToLower(body)
 	// Simple check - does any text (i.e. table names) contain schema_migrations?
-	tableExists := strings.Contains(lowerCaseBody, "s_mgrt")
+	tableExists := strings.Contains(lowerCaseBody, "schema_migrations")
 
 	if tableExists {
 		fmt.Println("Schema migrations table already exists")
@@ -227,7 +229,6 @@ func (s *Ksql) runKsql(query string) (*http.Response, error) {
 
 func (s *Ksql) runQuery(query string) (*http.Response, error) {
 	url := fmt.Sprintf(`%v/query`, s.HttpUrl)
-	fmt.Println(url, query)
 	return s.doQuery(url, query)
 }
 
