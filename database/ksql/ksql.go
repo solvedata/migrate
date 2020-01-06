@@ -156,12 +156,12 @@ func (s *Ksql) Version() (version int, dirty bool, err error) {
 
 	rowtime, err := s.getLatestSchemaRowTime()
 	if err != nil {
-		return -1, false, err
+		return -1, false, nil
 	}
 
 	currentVersion, isDirty, err := s.getLatestMigration(rowtime)
 	if err != nil {
-		return -1, false, err
+		return -1, false, nil
 	}
 
 	return currentVersion, isDirty, nil
@@ -302,7 +302,6 @@ func responseBodyMigrationResult(resp *http.Response) (MigrationResult, error) {
 func resposeBodyText(resp *http.Response) string {
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Println("Error printing response body", err)
 		return ""
 	}
 	return string(bodyBytes)
