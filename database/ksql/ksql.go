@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/solvedata/migrate/v4/database"
 )
@@ -59,7 +60,7 @@ type Ksql struct {
 func (s *Ksql) Open(url string) (database.Driver, error) {
 	fmt.Println("Opening at KSQL URL", url)
 	// Create HTTP client to use
-	client := &http.Client{}
+	client := &http.Client{Timeout: 5 * time.Second}
 	httpUrl := strings.Replace(url, "ksql://", "http://", 1)
 	fmt.Println("Setting HTTP URL with", httpUrl)
 
@@ -178,6 +179,7 @@ func (s *Ksql) ensureUrlConection() bool {
 	query := "LIST TOPICS;"
 	resp, err := s.runKsql(query)
 	if err != nil {
+		fmt.Println("KSQL URL is not accepting requests")
 		return false
 	}
 
