@@ -156,11 +156,13 @@ func (s *Ksql) Version() (version int, dirty bool, err error) {
 
 	rowtime, err := s.getLatestSchemaRowTime()
 	if err != nil {
+		fmt.Println("Error getting latest schema row time")
 		return -1, false, nil
 	}
 
 	currentVersion, isDirty, err := s.getLatestMigration(rowtime)
 	if err != nil {
+		fmt.Println("Error getting latest migration version")
 		return -1, false, nil
 	}
 
