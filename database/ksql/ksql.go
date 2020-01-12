@@ -60,7 +60,7 @@ type Ksql struct {
 func (s *Ksql) Open(url string) (database.Driver, error) {
 	fmt.Println("Opening at KSQL URL", url)
 	// Create HTTP client to use
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second}
 	httpUrl := strings.Replace(url, "ksql://", "http://", 1)
 	fmt.Println("Setting HTTP URL with", httpUrl)
 
