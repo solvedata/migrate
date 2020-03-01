@@ -215,7 +215,6 @@ func (s *Ksql) ensureVersionTable() (err error) {
 	}
 
 	fmt.Println("Schema migrations table creation done!")
-	fmt.Println(resposeBodyText(resp))
 	return nil
 }
 
