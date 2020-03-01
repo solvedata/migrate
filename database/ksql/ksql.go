@@ -30,10 +30,10 @@ var CreateMigrationTableSQL = `CREATE TABLE schema_migrations
   WITH (KAFKA_TOPIC = 'ksql_schema_migrations',
         VALUE_FORMAT='JSON',
         PARTITIONS = 1)
-  AS SELECT MAX(ROWTIME), type FROM migrations
+  AS SELECT MAX(current_version) as current_version, type FROM migrations
+  WHERE NOT is_dirty
   GROUP BY type;`
-var LatestSchemaRowTimeSQL = `SELECT * FROM schema_migrations WHERE type = 'schema' LIMIT 1;`
-var LatestSchemaMigrationSql = `SELECT * FROM migrations WHERE rowtime = %v LIMIT 1;`
+var LatestSchemaMigrationSql = `SELECT current_version FROM schema_migrations WHERE type = 'schema' LIMIT 1;`
 
 type MigrationResult struct {
 	Row MigrationRow
@@ -146,7 +146,6 @@ func (s *Ksql) SetVersion(version int, dirty bool) error {
 
 // Retrieves the current version of the KSQL migration state
 func (s *Ksql) Version() (version int, dirty bool, err error) {
-	fmt.Println("Version:", version)
 	if s.FirstRun {
 		// This is the first time _any_ migration has been run. No version to retrieve
 		// See .ensureVersionTable for where this is set
@@ -154,13 +153,7 @@ func (s *Ksql) Version() (version int, dirty bool, err error) {
 		return -1, false, nil
 	}
 
-	rowtime, err := s.getLatestSchemaRowTime()
-	if err != nil {
-		fmt.Println("Error getting latest schema row time")
-		return -1, false, nil
-	}
-
-	currentVersion, isDirty, err := s.getLatestMigration(rowtime)
+	currentVersion, isDirty, err := s.getLatestMigration()
 	if err != nil {
 		fmt.Println("Error getting latest migration version")
 		return -1, false, nil
@@ -222,7 +215,7 @@ func (s *Ksql) ensureVersionTable() (err error) {
 	}
 
 	fmt.Println("Schema migrations table creation done!")
-
+	fmt.Println(resposeBodyText(resp))
 	return nil
 }
 
@@ -255,24 +248,9 @@ func (s *Ksql) doQuery(url string, query string) (*http.Response, error) {
 	return resp, nil
 }
 
-// Does a request for the most recent timestamp in the migration stream
-func (s *Ksql) getLatestSchemaRowTime() (interface{}, error) {
-	resp, err := s.runQuery(LatestSchemaRowTimeSQL)
-	if err != nil {
-		return nil, err
-	}
-
-	result, err := responseBodyMigrationResult(resp)
-	if err != nil {
-		return nil, err
-	}
-
-	return result.Row.Columns[0], nil
-}
-
 // Does a request for the most recent event in the migration table
-func (s *Ksql) getLatestMigration(rowtime interface{}) (int, bool, error) {
-	resp, err := s.runQuery(fmt.Sprintf(LatestSchemaMigrationSql, rowtime))
+func (s *Ksql) getLatestMigration() (int, bool, error) {
+	resp, err := s.runQuery(fmt.Sprintf(LatestSchemaMigrationSql))
 	if err != nil {
 		return -1, false, err
 	}
@@ -280,10 +258,10 @@ func (s *Ksql) getLatestMigration(rowtime interface{}) (int, bool, error) {
 	if err != nil {
 		return -1, false, err
 	}
+	currentVersion := int(result.Row.Columns[0].(float64))
+	fmt.Println("Current version:", currentVersion)
 
-	currentVersion := int(result.Row.Columns[3].(float64))
-	isDirty := result.Row.Columns[4].(bool)
-	return currentVersion, isDirty, nil
+	return currentVersion, false, nil
 }
 
 // Helper to grab the first line in a response body (while also removing whitespace etc)
