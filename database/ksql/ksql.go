@@ -8,6 +8,8 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,7 +62,12 @@ type Ksql struct {
 func (s *Ksql) Open(url string) (database.Driver, error) {
 	fmt.Println("Opening at KSQL URL", url)
 	// Create HTTP client to use
-	client := &http.Client{Timeout: 10 * time.Second}
+	timeout, err := strconv.ParseInt(os.Getenv("MIGRATE_KSQL_TIMEOUT"), 10, 64)
+	if err != nil {
+		fmt.Println("Unable to parse `MIGRATE_KSQL_TIMEOUT` environment variable. Defaulting to 10 seconds.")
+		timeout = 10
+	}
+	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
 	httpUrl := strings.Replace(url, "ksql://", "http://", 1)
 	fmt.Println("Setting HTTP URL with", httpUrl)
 
