@@ -9,6 +9,13 @@
 
 # migrate
 
+## Note This repository fork is no longer necessary.
+
+This repository fork was created to allow for golang-migrate KSQL migrations, since the source repository did not support it.
+However, solvedata no longer uses KSQL in its platform, so this fork is no longer needed.
+
+At some point this repository can be deleted.
+
 __Database migrations written in Go. Use as [CLI](#cli-usage) or import as [library](#use-in-your-go-project).__
 
 * Migrate reads migrations from [sources](#migration-sources)
